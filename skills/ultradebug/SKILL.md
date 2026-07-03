@@ -157,7 +157,10 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
 2. Never claim done without evidence in the transcript — `/ultraqa` PASS is the gate.
 3. Minimal fixes only: root cause, not symptom; add/adjust a regression test.
 4. Preserve every hypothesis (audit trail). Log the Path A routing choice + cost.
-5. One bug per session.
+5. One bug per session. Do NOT reuse a session for a second bug: the driver's
+   completion scan reads the transcript tail, so a prior run's standalone
+   `ULTRADEBUG_COMPLETE` line could false-complete a new run started in the same
+   session. Start a fresh session (or `--resume` the intended one) instead.
 </Rules>
 
 <Cancellation>

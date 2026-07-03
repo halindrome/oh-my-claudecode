@@ -152,6 +152,33 @@ describe('persistent-mode ultradebug driver', () => {
     }
   });
 
+  it('auto-disables at the hard-max iteration cap and keeps state for --resume', async () => {
+    const sessionId = 'ud-hardmax';
+    // iteration far above any hardMax (200/500 by profile); max_iterations higher
+    // still, so the hard-max branch — checked first — is the one that fires.
+    const { tempDir, stateDir } = setup(sessionId, {
+      active: true,
+      iteration: 100000,
+      max_iterations: 200000,
+      status: 'investigating',
+      started_at: new Date().toISOString(),
+    });
+
+    try {
+      const result = await checkPersistentModes(sessionId, tempDir);
+      expect(result.shouldBlock).toBe(true);
+      expect(result.mode).toBe('ultradebug');
+      expect(result.message).toContain('[ULTRADEBUG - HARD LIMIT]');
+
+      const statePath = join(stateDir, 'ultradebug-state.json');
+      expect(existsSync(statePath)).toBe(true);
+      const updated = JSON.parse(readFileSync(statePath, 'utf-8')) as { active: boolean };
+      expect(updated.active).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('does NOT complete when an assistant turn only NARRATES the promise inside a sentence', async () => {
     const sessionId = 'ud-narrate';
     const { tempDir, stateDir } = setup(sessionId, {
