@@ -53,6 +53,12 @@ Cross-turn autonomy is driven by the persistent-mode Stop hook's `ultradebug` mo
 session is `active`, each Stop re-injects the continuation prompt until completion,
 `max_iterations`, or the thinking-only guard trips. `--resume` continues a session
 that was interrupted or stopped at a bound.
+
+Do **not** use `ScheduleWakeup` (or any self-scheduled timer) to wait on background
+work — the Stop-hook loop already re-injects a continuation every turn, so let it
+drive. A wakeup you schedule mid-run can fire *after* the loop completes and
+re-invoke `/ultradebug` against cleared state (a phantom re-entry). If you have
+already scheduled one, you MUST cancel it before completing (Phase 5).
 </Driver>
 
 <State>
@@ -146,6 +152,10 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
   `status=investigating` with the note as failure context; increment `iteration`; loop.
   (This reuses OMC's autopilot pause pattern — a single default-off confirmation gate —
   rather than a bespoke UAT phase; see §13A R1.)
+- **Cancel any pending `ScheduleWakeup`** you created during the run (e.g. to poll a
+  background test) BEFORE completing — otherwise it fires after completion and
+  re-invokes `/ultradebug` against cleared state. Simply omit the next `ScheduleWakeup`
+  call; do not schedule a further one.
 - Emit the result summary (mode + backend, issue, root cause, outcome, files, commit).
 - Print `ULTRADEBUG_COMPLETE`.
 - Delete `.omc/state/sessions/{sessionId}/ultradebug-state.json` (never leave `active:false`).
@@ -182,5 +192,7 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
 </Rules>
 
 <Cancellation>
-`/oh-my-claudecode:cancel` clears ultradebug state. On `complete`, delete the session file.
+`/oh-my-claudecode:cancel` clears ultradebug state. On `complete`, delete the session
+file. On both paths, do not leave a pending `ScheduleWakeup` outstanding — a stale
+wakeup re-invokes `/ultradebug` against cleared state.
 </Cancellation>
