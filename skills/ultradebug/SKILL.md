@@ -97,28 +97,39 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
 - **Emit the routing decision + reason** so the 3-lane cost of Path A is visible.
 - Persist `path`.
 
-**Phase 2 — Investigate (read-only).**
-- **Path A (competing):** run `/trace` orchestration — 3 `tracer` lanes, deliberately
-  different hypotheses, evidence for/against, rebuttal, synthesis picks the winner.
-  (Dispatch backend = teams via `/trace` for v1, D3.)
-- **Path B (standard):** spawn one `debugger` agent (scientific method).
+**Phase 2 — Investigate (read-only). MUST DELEGATE — do not investigate inline.**
+- You **MUST** dispatch the investigation to subagents. Do **not** read source, `grep`,
+  trace, or reason about the bug yourself in this thread. The entire point of ultradebug
+  is to keep the loop's context clean and route work to OMC's agents — inline
+  investigation defeats it. If you are about to run `Read`/`Grep`/`Glob`/`Bash` to inspect
+  the bug from this thread, STOP and delegate. The only text you read in this phase is the
+  agent's returned report.
+- **Path A (competing):** invoke `/trace` via the **Skill tool** — 3 `tracer` lanes,
+  deliberately different hypotheses, evidence for/against, rebuttal; synthesis picks the
+  winner. (Dispatch backend = teams via `/trace` for v1, D3.)
+- **Path B (standard):** spawn one `debugger` agent via the **Task/Agent tool**
+  (`subagent_type: oh-my-claudecode:debugger`), scientific method.
 - Model selection follows OMC's per-role defaults — `tracer`/`debugger` run at their
   own default tier (no global effort knob; see §13A R2). Escalate a specific agent to
   `opus` only when the subtask is genuinely hard.
-- Persist ALL hypotheses (confirmed + rejected) and `root_cause`.
+- Persist ALL hypotheses (confirmed + rejected) and `root_cause` from the agents' reports.
 - Confident root cause → `status=fixing`, go to Phase 3.
 - No confident root cause → stay `investigating`; loop re-injects for the next
   hypothesis (or `--resume`). Never fabricate a fix.
 
-**Phase 3 — Fix.**
-- Spawn `executor` (default tier; `opus` for complex work) with the root cause + minimal
-  fix. It applies the change and commits `fix({scope}): {desc}` using OMC's git-trailer
-  protocol (D7: `Constraint:`/`Rejected:`/`Confidence:`/`Scope-risk:`).
-- Persist `changed_files`, `commit`. Set `status=verifying`.
+**Phase 3 — Fix. MUST DELEGATE — do not edit files inline.**
+- You **MUST** apply the fix by spawning an `executor` agent via the **Task/Agent tool**
+  (`subagent_type: oh-my-claudecode:executor`; default tier, `opus` for complex work) with
+  the root cause + minimal-fix plan. Do **not** run `Edit`/`Write`/`MultiEdit` from this
+  thread. The executor applies the change and commits `fix({scope}): {desc}` using OMC's
+  git-trailer protocol (D7: `Constraint:`/`Rejected:`/`Confidence:`/`Scope-risk:`).
+- Persist `changed_files`, `commit` from the executor's report. Set `status=verifying`.
 
-**Phase 4 — Verify (always delegate, D1).**
-- Delegate to `/ultraqa` — never inline — with the goal scoped to the changed files
-  plus a repro of the original bug (default `--tests`). Read back its verdict.
+**Phase 4 — Verify (always delegate, D1). MUST DELEGATE — never verify inline.**
+- You **MUST** delegate to `/ultraqa` via the **Skill tool** — never run the tests, build,
+  or repro yourself from this thread, and never substitute a repo-local QA skill for it —
+  with the goal scoped to the changed files plus a repro of the original bug (default
+  `--tests`). Read back its verdict.
 - When `verify_interactive` (`--interactive`) is set, forward `--interactive` to the
   `/ultraqa` call so its verify phase uses `qa-tester` for interactive CLI/service
   testing. (This is `ultraqa`'s own flag, passed through — not the completion gate,
@@ -152,12 +163,19 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
 </Exit_Conditions>
 
 <Rules>
-1. Author/review separation: investigators (`tracer`/`debugger`) are read-only; only
+1. **Delegate, don't inline (the core contract).** Investigation, fixing, and
+   verification MUST run in subagents (Task/Skill), never in this loop's own thread. If
+   you are reading source, grepping, editing files, or running tests/builds directly
+   here, you are doing it wrong — the loop *orchestrates* agents; it does not do their
+   work. The only tools this thread runs are: state I/O (`state_read`/`state_write`),
+   `git status`/`rev-parse`, the Skill tool (`/trace`, `/ultraqa`), the Task/Agent tool
+   (`debugger`, `executor`), and `AskUserQuestion`. Everything else belongs in an agent.
+2. Author/review separation: investigators (`tracer`/`debugger`) are read-only; only
    `executor` mutates and commits. Verification is a separate lane (`/ultraqa`).
-2. Never claim done without evidence in the transcript — `/ultraqa` PASS is the gate.
-3. Minimal fixes only: root cause, not symptom; add/adjust a regression test.
-4. Preserve every hypothesis (audit trail). Log the Path A routing choice + cost.
-5. One bug per session. Do NOT reuse a session for a second bug: the driver's
+3. Never claim done without evidence in the transcript — `/ultraqa` PASS is the gate.
+4. Minimal fixes only: root cause, not symptom; add/adjust a regression test.
+5. Preserve every hypothesis (audit trail). Log the Path A routing choice + cost.
+6. One bug per session. Do NOT reuse a session for a second bug: the driver's
    completion scan reads the transcript tail, so a prior run's standalone
    `ULTRADEBUG_COMPLETE` line could false-complete a new run started in the same
    session. Start a fresh session (or `--resume` the intended one) instead.

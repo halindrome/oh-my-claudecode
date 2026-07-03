@@ -165,10 +165,11 @@ Your previous attempt did not output the completion promise \`${ULTRADEBUG_COMPL
 Continue the debug loop from the current session status.
 
 CRITICAL INSTRUCTIONS:
-1. Resume from the persisted session status (investigate -> fix -> verify).
-2. Preserve every hypothesis (confirmed AND rejected) so resume never re-investigates a dead end.
-3. Only print \`${ULTRADEBUG_COMPLETE_PROMISE}\` — alone on its own line — once the original repro passes AND /ultraqa returned PASS. (The driver only recognizes it as a standalone line; do not write it inside a sentence.)
-4. Never print the promise to escape a hard iteration — report the blocker instead.
+1. DELEGATE — do not do the work inline in this thread. Investigate via /trace (Skill) or an oh-my-claudecode:debugger agent (Task); fix ONLY via an oh-my-claudecode:executor agent (Task); verify ONLY via /ultraqa (Skill). Do NOT Read/Grep/Edit/Write/run tests on the bug yourself here — spawn the agent. Inline work defeats the entire purpose of this loop.
+2. Resume from the persisted session status (investigate -> fix -> verify).
+3. Preserve every hypothesis (confirmed AND rejected) so resume never re-investigates a dead end.
+4. Only print \`${ULTRADEBUG_COMPLETE_PROMISE}\` — alone on its own line — once the original repro passes AND /ultraqa returned PASS. (The driver only recognizes it as a standalone line; do not write it inside a sentence.)
+5. Never print the promise to escape a hard iteration — report the blocker instead.
 </ultradebug-continuation>
 
 ---
