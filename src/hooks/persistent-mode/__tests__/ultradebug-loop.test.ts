@@ -70,7 +70,8 @@ describe('persistent-mode ultradebug driver', () => {
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'fix the bug' } }),
         JSON.stringify({
           type: 'assistant',
-          message: { role: 'assistant', content: [{ type: 'text', text: 'Repro passes, suite green. ULTRADEBUG_COMPLETE' }] },
+          // Promise on its OWN line (line-anchored contract).
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Repro passes, suite green.\nULTRADEBUG_COMPLETE' }] },
         }),
       ].join('\n') + '\n',
     );
@@ -146,6 +147,44 @@ describe('persistent-mode ultradebug driver', () => {
       const updated = JSON.parse(readFileSync(statePath, 'utf-8')) as { active: boolean; iteration: number };
       expect(updated.active).toBe(false);
       expect(updated.iteration).toBe(8);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT complete when an assistant turn only NARRATES the promise inside a sentence', async () => {
+    const sessionId = 'ud-narrate';
+    const { tempDir, stateDir } = setup(sessionId, {
+      active: true,
+      iteration: 4,
+      max_iterations: 8,
+      status: 'verifying',
+      started_at: new Date().toISOString(),
+    });
+
+    // Assistant mentions the token mid-sentence (self-reference), not as a
+    // standalone emission. Line-anchored detection must NOT treat this as done.
+    const transcriptPath = join(tempDir, 'transcript.jsonl');
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: "Verification is still pending, so I will not print ULTRADEBUG_COMPLETE yet." }],
+          },
+        }),
+      ].join('\n') + '\n',
+    );
+
+    try {
+      const result = await checkPersistentModes(sessionId, tempDir, { transcript_path: transcriptPath });
+      // Loop continues (re-injects), state NOT cleared.
+      expect(result.shouldBlock).toBe(true);
+      expect(result.mode).toBe('ultradebug');
+      expect(result.message).toContain('[ULTRADEBUG - ITERATION 5/8]');
+      expect(existsSync(join(stateDir, 'ultradebug-state.json'))).toBe(true);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

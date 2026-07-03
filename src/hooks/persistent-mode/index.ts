@@ -1314,7 +1314,6 @@ function transcriptHasUltradebugPromise(transcriptPath: string): boolean {
 async function checkUltradebug(
   sessionId?: string,
   directory?: string,
-  cancelInProgress?: boolean,
   stopContext?: StopContext,
 ): Promise<PersistentModeResult | null> {
   const workingDir = resolveToWorktreeRoot(directory);
@@ -1336,10 +1335,10 @@ async function checkUltradebug(
     return null;
   }
 
-  // Never re-arm internals while a cancel is in progress.
-  if (cancelInProgress) {
-    return { shouldBlock: false, message: '', mode: 'none' };
-  }
+  // (No cancel-in-progress guard here: checkPersistentModes short-circuits on
+  // isSessionCancelInProgress well before this priority runs, so it is always
+  // false at this call site — see the early return near the cancelInProgress
+  // computation.)
 
   // Completion promise: only genuine when an assistant turn printed it. This is
   // genuine completion, so clear state (idempotent with the skill's own delete).
@@ -2450,11 +2449,15 @@ async function resolvePersistentModeBlock(
   }
 
   // Priority 1.5: UltraDebug (stateful bug-fixing loop, ralph-engine driven, D4)
-  // Self-gates on its own session state; returns null when inactive so lower
-  // priorities still run. Suppressed while the ultradebug slot is tombstoned so
-  // a completed run does not re-arm until the tombstone TTL expires.
+  // Unlike ralph/autopilot above, ultradebug is a STATE-ONLY mode (it lives in
+  // EXTRA_STATE_ONLY_MODES, not the skill-active registry), so isModeActive() never
+  // reports it — gating on isModeActive here would permanently disable the loop.
+  // Instead checkUltradebug self-gates on its own session-state file plus the
+  // stale-state TTL, the session-isolation check, and the tombstone set below,
+  // which together cover the stale-restored-artifact case isModeActive handles for
+  // the registry-backed modes. Returns null when inactive so lower priorities run.
   if (!tombstonedWorkflowModes.has('ultradebug')) {
-    const ultradebugResult = await checkUltradebug(sessionId, workingDir, cancelInProgress, stopContext);
+    const ultradebugResult = await checkUltradebug(sessionId, workingDir, stopContext);
     if (ultradebugResult) {
       return ultradebugResult;
     }

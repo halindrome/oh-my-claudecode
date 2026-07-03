@@ -136,7 +136,17 @@ export function incrementUltradebugIteration(
  * the promise string, so scanning injected (user-role) prompts would false-positive.
  */
 export function detectUltradebugComplete(text: string): boolean {
-  return typeof text === "string" && text.includes(ULTRADEBUG_COMPLETE_PROMISE);
+  if (typeof text !== "string") return false;
+  // Line-anchored, NOT a substring scan: the promise must be the only content on a
+  // line (surrounding whitespace allowed). Merely narrating the token in prose —
+  // e.g. "next I'll print ULTRADEBUG_COMPLETE" or "not printing ULTRADEBUG_COMPLETE
+  // yet" — must not complete the loop and delete state. The continuation prompt
+  // quotes the token inside sentences, and the SKILL contract requires emitting it
+  // alone on its own line, so this accepts a deliberate emission while rejecting
+  // self-reference.
+  return text
+    .split(/\r?\n/)
+    .some((line) => line.trim() === ULTRADEBUG_COMPLETE_PROMISE);
 }
 
 /**
@@ -157,7 +167,7 @@ Continue the debug loop from the current session status.
 CRITICAL INSTRUCTIONS:
 1. Resume from the persisted session status (investigate -> fix -> verify).
 2. Preserve every hypothesis (confirmed AND rejected) so resume never re-investigates a dead end.
-3. Only print \`${ULTRADEBUG_COMPLETE_PROMISE}\` once the original repro passes AND /ultraqa returned PASS.
+3. Only print \`${ULTRADEBUG_COMPLETE_PROMISE}\` — alone on its own line — once the original repro passes AND /ultraqa returned PASS. (The driver only recognizes it as a standalone line; do not write it inside a sentence.)
 4. Never print the promise to escape a hard iteration — report the blocker instead.
 </ultradebug-continuation>
 

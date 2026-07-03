@@ -43,13 +43,16 @@ while the session's `active: true`, until either:
 - the thinking-only-streak guard trips (no tool progress).
 
 Completion promise contract: only print `ULTRADEBUG_COMPLETE` once session status is
-`complete` (the original repro passes AND `/ultraqa` returned PASS). Never print it
-to escape a hard iteration — report the blocker instead.
+`complete` (the original repro passes AND `/ultraqa` returned PASS). Print it **alone
+on its own line** — the driver recognizes the promise ONLY as a standalone line, so
+narrating the token inside a sentence (e.g. "not printing ULTRADEBUG_COMPLETE yet")
+will NOT end the loop. Never print it to escape a hard iteration — report the blocker.
 
-Implementation note: full cross-turn autonomy requires the persistent-mode Stop
-hook to recognize an `ultradebug` mode (small follow-up in `src/hooks/persistent-mode`,
-mirroring `ralph`). Until then the loop runs in-context within a single turn and
-relies on `--resume` for continuation. This does not change the phases below.
+Cross-turn autonomy is driven by the persistent-mode Stop hook's `ultradebug` mode
+(`checkUltradebug` in `src/hooks/persistent-mode`, mirroring `ralph`): while the
+session is `active`, each Stop re-injects the continuation prompt until completion,
+`max_iterations`, or the thinking-only guard trips. `--resume` continues a session
+that was interrupted or stopped at a bound.
 </Driver>
 
 <State>
@@ -79,6 +82,12 @@ Hypothesis preservation is non-negotiable — keep every rejected hypothesis so
 - No description and no resume flag → STOP with usage.
 - On resume, dispatch on `status`: `investigating`→Phase 2, `fixing`→Phase 3,
   `verifying`→Phase 4, `complete`→STOP (already done).
+- **Re-arm on resume.** A session stopped at a bound has `active:false` (state kept
+  by design). To resume it, first write `active:true` and ensure `iteration <
+  max_iterations` — raise `max_iterations` if the previous run exhausted it — so the
+  Stop-hook driver re-injects continuations again. (Resume normally runs in a fresh
+  session, where the in-memory tombstone that suppressed the slot at stop time is
+  already gone; within the same session, the tombstone TTL must lapse first.)
 
 **Phase 1 — Classify + route (D6).**
 - Ambiguity signals (2+ = ambiguous): intermittent/flaky/random/sporadic wording;
