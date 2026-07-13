@@ -23,6 +23,7 @@ Automatically detects which mode is active and cancels it:
 - **Ralph**: Stops persistence loop, clears linked ultrawork if applicable
 - **Ultrawork**: Stops parallel execution (standalone or linked)
 - **UltraQA**: Stops QA cycling workflow
+- **UltraDebug**: Stops the stateful bug-fixing loop, clears its session state
 - **Swarm**: Stops coordinated agent swarm, releases claimed tasks
 - **Ultrapilot**: Stops parallel autopilot workers
 - **Pipeline**: Stops sequential agent pipeline
@@ -52,7 +53,7 @@ escape from the stop hook loop**. This is NOT a full replacement for the cancel 
 it only removes state files to unblock the session. Linked modes (e.g. ralph→ultrawork,
 autopilot→ralph/ultraqa) must be cleared separately by running the fallback once per mode.
 
-Replace `MODE` with the specific mode (e.g. `ralplan`, `ralph`, `ultrawork`, `ultraqa`).
+Replace `MODE` with the specific mode (e.g. `ralplan`, `ralph`, `ultrawork`, `ultraqa`, `ultradebug`).
 
 **WARNING:** Do NOT use this fallback for `autopilot` or `omc-teams`. Autopilot requires
 `state_write(active=false)` to preserve resume data. omc-teams requires tmux session
@@ -113,13 +114,14 @@ Active modes are still cancelled in dependency order:
 2. Ralph (cleans its linked ultrawork or )
 3. Ultrawork (standalone)
 4. UltraQA (standalone)
-5. Swarm (standalone)
-6. Ultrapilot (standalone)
-7. Pipeline (standalone)
-8. Team (Claude Code native)
-9. OMC Teams (tmux CLI workers)
-10. Plan Consensus (standalone)
-11. Self-Improve (standalone — clear state, clean orphaned worktrees, preserve iteration_state for resume, set status: "user_stopped" in the resolved `<self-improve-root>/state/agent-settings.json`; new runs use `.omc/self-improve/topics/<topic-slug>/`, with flat `.omc/self-improve/` retained only for legacy single-track resumes)
+5. UltraDebug (standalone — session-scoped state file, cleared via `state_clear(mode="ultradebug")`)
+6. Swarm (standalone)
+7. Ultrapilot (standalone)
+8. Pipeline (standalone)
+9. Team (Claude Code native)
+10. OMC Teams (tmux CLI workers)
+11. Plan Consensus (standalone)
+12. Self-Improve (standalone — clear state, clean orphaned worktrees, preserve iteration_state for resume, set status: "user_stopped" in the resolved `<self-improve-root>/state/agent-settings.json`; new runs use `.omc/self-improve/topics/<topic-slug>/`, with flat `.omc/self-improve/` retained only for legacy single-track resumes)
 
 ## Force Clear All
 

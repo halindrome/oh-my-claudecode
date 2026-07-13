@@ -16,6 +16,10 @@ import {
   readdirSync,
   mkdirSync,
   unlinkSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
 } from "fs";
 import { join, dirname, resolve, normalize } from "path";
 import { homedir } from "os";
@@ -744,6 +748,169 @@ function isContextLimitStop(data) {
 }
 
 /**
+ * Get hard max iterations from OMC_SECURITY / config file.
+ * Returns 0 if unlimited (default).
+ */
+function getHardMaxIterations() {
+  // OMC_SECURITY=strict → default hard max 200
+  if (process.env.OMC_SECURITY === "strict") {
+    const configOverride = readSecurityConfigValue("hardMaxIterations");
+    return typeof configOverride === "number" ? configOverride : 200;
+  }
+  const configValue = readSecurityConfigValue("hardMaxIterations");
+  return typeof configValue === "number" ? configValue : 0;
+}
+
+/**
+ * Read a single value from the security section of omc config files.
+ */
+function readSecurityConfigValue(key) {
+  const paths = [
+    join(process.cwd(), ".claude", "omc.jsonc"),
+    join(homedir(), ".config", "claude-omc", "config.jsonc"),
+  ];
+  for (const p of paths) {
+    try {
+      if (!existsSync(p)) continue;
+      const raw = readFileSync(p, "utf-8");
+      const json = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+      const parsed = JSON.parse(json);
+      if (parsed?.security && parsed.security[key] !== undefined) {
+        return parsed.security[key];
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
+
+/** Best-effort delete of a loaded mode-state file (mirrors scripts/persistent-mode.mjs). */
+function clearLoadedStateFile(loaded) {
+  const statePath = loaded?.path;
+  if (!statePath || !existsSync(statePath)) return;
+  try {
+    unlinkSync(statePath);
+  } catch {
+    // Best effort: failing to clean an orphan should not re-arm stop blocking.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UltraDebug enforcement helpers (ralph-engine driven). Kept byte-exact with
+// scripts/persistent-mode.mjs and src/hooks/ultradebug/index.ts — the completion
+// promise, continuation-prompt header, and line-anchored scan are contract-tested.
+// This template is the standalone (non-plugin) Stop hook; the plugin path uses
+// scripts/persistent-mode.mjs, so the ultradebug driver must live in BOTH.
+// ---------------------------------------------------------------------------
+
+const ULTRADEBUG_COMPLETE_PROMISE = "ULTRADEBUG_COMPLETE";
+const ULTRADEBUG_TRANSCRIPT_TAIL_BYTES = 32 * 1024; // 32 KB
+
+/** Read the last 32 KB of the transcript as JSONL lines. */
+function readUltradebugTranscriptTailLines(transcriptPath) {
+  let fd = -1;
+  let content;
+  try {
+    const size = statSync(transcriptPath).size;
+    if (size <= ULTRADEBUG_TRANSCRIPT_TAIL_BYTES) {
+      content = readFileSync(transcriptPath, "utf-8");
+    } else {
+      const offset = size - ULTRADEBUG_TRANSCRIPT_TAIL_BYTES;
+      const buf = Buffer.allocUnsafe(ULTRADEBUG_TRANSCRIPT_TAIL_BYTES);
+      fd = openSync(transcriptPath, "r");
+      const bytesRead = readSync(fd, buf, 0, ULTRADEBUG_TRANSCRIPT_TAIL_BYTES, offset);
+      closeSync(fd);
+      fd = -1;
+      content = buf.subarray(0, bytesRead).toString("utf-8");
+    }
+  } catch {
+    if (fd !== -1) try { closeSync(fd); } catch { /* best-effort */ }
+    return [];
+  }
+
+  const lines = content.split("\n");
+  try {
+    if (statSync(transcriptPath).size > ULTRADEBUG_TRANSCRIPT_TAIL_BYTES && lines.length > 0) {
+      lines.shift();
+    }
+  } catch {
+    return lines;
+  }
+  return lines;
+}
+
+/** Recursively pull text out of a transcript content block. */
+function extractUltradebugTranscriptText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => extractUltradebugTranscriptText(item)).filter(Boolean).join("\n");
+  }
+  if (!content || typeof content !== "object") return "";
+  const directText = typeof content.text === "string" ? content.text : "";
+  const nestedContent = "content" in content ? extractUltradebugTranscriptText(content.content) : "";
+  return [directText, nestedContent].filter(Boolean).join("\n");
+}
+
+/**
+ * Line-anchored completion detection: the promise must be the ONLY content on a
+ * line. Narrating the token inside a sentence must not complete the loop.
+ */
+function ultradebugTextHasPromise(text) {
+  if (typeof text !== "string") return false;
+  return text.split(/\r?\n/).some((line) => line.trim() === ULTRADEBUG_COMPLETE_PROMISE);
+}
+
+/**
+ * Scan ONLY assistant-authored transcript turns for the completion promise.
+ * Fails closed on any read/parse error.
+ */
+function transcriptHasUltradebugPromise(transcriptPath) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return false;
+  for (const line of readUltradebugTranscriptTailLines(transcriptPath)) {
+    const trimmed = line?.trim();
+    if (!trimmed) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const role = parsed?.message?.role;
+    const isAssistant = parsed?.type === "assistant" || role === "assistant";
+    if (!isAssistant) continue;
+    if (ultradebugTextHasPromise(extractUltradebugTranscriptText(parsed.message?.content))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Build the Stop-hook continuation prompt. Keep the `[ULTRADEBUG - ITERATION n/max]`
+ * header byte-exact with buildUltradebugContinuationPrompt in the TS/scripts copies.
+ */
+function buildUltradebugContinuationPrompt(iteration, maxIterations) {
+  return `<ultradebug-continuation>
+[ULTRADEBUG - ITERATION ${iteration}/${maxIterations}]
+
+Your previous attempt did not output the completion promise \`${ULTRADEBUG_COMPLETE_PROMISE}\`.
+Continue the debug loop from the current session status.
+
+CRITICAL INSTRUCTIONS:
+1. DELEGATE — do not do the work inline in this thread. Investigate via /trace (Skill) or an oh-my-claudecode:debugger agent (Task); fix ONLY via an oh-my-claudecode:executor agent (Task); verify ONLY via /ultraqa (Skill). Do NOT Read/Grep/Edit/Write/run tests on the bug yourself here — spawn the agent. Inline work defeats the entire purpose of this loop.
+2. Resume from the persisted session status (investigate -> fix -> verify).
+3. Preserve every hypothesis (confirmed AND rejected) so resume never re-investigates a dead end.
+4. Only print \`${ULTRADEBUG_COMPLETE_PROMISE}\` — alone on its own line — once the original repro passes AND /ultraqa returned PASS. (The driver only recognizes it as a standalone line; do not write it inside a sentence.)
+5. Never print the promise to escape a hard iteration — report the blocker instead.
+</ultradebug-continuation>
+
+---
+
+`;
+}
+
+/**
  * Detect if stop was triggered by user abort (Ctrl+C, cancel button, etc.)
  */
 function isUserAbort(data) {
@@ -889,6 +1056,12 @@ async function main() {
       "ralph-state.json",
       sessionId,
     );
+    const ultradebug = readStateFileWithSession(
+      stateDir,
+      globalStateDir,
+      "ultradebug-state.json",
+      sessionId,
+    );
     const autopilot = readStateFileWithSession(
       stateDir,
       globalStateDir,
@@ -998,6 +1171,86 @@ async function main() {
             continue: false,
             decision: "block",
             reason: `[RALPH LOOP - EXTENDED] Max iterations reached; extending to ${ralph.state.max_iterations} and continuing. When FULLY complete (after Architect verification), run /oh-my-claudecode:cancel (or --force).`,
+          }),
+        );
+        return;
+      }
+    }
+
+    // Priority 1.5: UltraDebug (stateful bug-fixing loop, ralph-engine driven).
+    // State-only mode (not in the skill-active registry), so it self-gates on its
+    // own session-state file + the stale TTL + session isolation — mirrors
+    // checkUltradebug in src/hooks/persistent-mode/index.ts.
+    if (
+      ultradebug.state?.active && !isAwaitingConfirmation(ultradebug.state) &&
+      !isStaleState(ultradebug.state)
+    ) {
+      const sessionMatches = hasValidSessionId
+        ? ultradebug.state.session_id === sessionId
+        : !ultradebug.state.session_id || ultradebug.state.session_id === sessionId;
+      if (sessionMatches) {
+        // Completion promise: genuine only when an assistant turn printed it.
+        // Clear state (idempotent with the skill's own delete) and release.
+        const transcriptPath = data.transcript_path || data.transcriptPath || "";
+        if (transcriptHasUltradebugPromise(transcriptPath)) {
+          clearLoadedStateFile(ultradebug);
+          console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+          return;
+        }
+
+        const iteration = ultradebug.state.iteration || 1;
+        const maxIter = ultradebug.state.max_iterations || 8;
+
+        // Hard max: independent of max_iterations so a large initial max cannot
+        // bypass it. Auto-disable but KEEP state for --resume; block once so the
+        // message surfaces (state is now inactive, so it will not re-loop).
+        const hardMax = getHardMaxIterations();
+        if (hardMax > 0 && iteration >= hardMax) {
+          ultradebug.state.active = false;
+          ultradebug.state.last_checked_at = new Date().toISOString();
+          if (!shouldWriteStateBack(ultradebug.path)) {
+            console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+            return;
+          }
+          writeJsonFile(ultradebug.path, ultradebug.state);
+          console.log(
+            JSON.stringify({
+              continue: false,
+              decision: "block",
+              reason: `[ULTRADEBUG - HARD LIMIT] Reached hard max iterations (${hardMax}). Mode auto-disabled; state kept for --resume. Restart with /oh-my-claudecode:ultradebug --resume if needed.`,
+            }),
+          );
+          return;
+        }
+
+        // Max iterations: unlike ralph (which extends), ultradebug STOPS and keeps
+        // state (active:false) for --resume, releasing the stop so the user regains
+        // control (SKILL.md <Exit_Conditions>).
+        if (iteration >= maxIter) {
+          ultradebug.state.active = false;
+          ultradebug.state.last_checked_at = new Date().toISOString();
+          if (shouldWriteStateBack(ultradebug.path)) {
+            writeJsonFile(ultradebug.path, ultradebug.state);
+          }
+          console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+          return;
+        }
+
+        // Increment and re-inject the continuation prompt.
+        const newIteration = iteration + 1;
+        ultradebug.state.iteration = newIteration;
+        ultradebug.state.last_checked_at = new Date().toISOString();
+        if (!shouldWriteStateBack(ultradebug.path)) {
+          console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+          return;
+        }
+        writeJsonFile(ultradebug.path, ultradebug.state);
+
+        console.log(
+          JSON.stringify({
+            continue: false,
+            decision: "block",
+            reason: buildUltradebugContinuationPrompt(newIteration, maxIter),
           }),
         );
         return;
